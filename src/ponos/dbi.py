@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Union
 
 import polars as pl
-
 import snowflake.connector
 import pyodbc
 import adbc_driver_manager
@@ -13,85 +11,191 @@ import adbc_driver_manager
 from ponos import utilities
 
 class DBI:
-    def __init__(self) -> None:
-        ''' 
-        Provides settings to connect directly to a database
+    def __init__(
+        self,
+        odbc_name: str | None = None,
+        connection_string: str | None = None,
+        uri: str | None = None,
+        driver: str | None = None,
+        account: str | None = None, 
+        warehouse: str | None = None, 
+        database: str | None = None,
+        schema: str | None = None, 
+        role: str | None = None, 
+        authenticator: str = 'externalbrowser'
+    ) -> None:
         '''
+        Initialize a database connection interface with support for multiple connection types.
 
-        self.user =(
+        Configures connection parameters for Snowflake, ODBC, or ADBC database connections.
+        The user is automatically detected from environment variables (SNOWFLAKE_USER, USER, or USERNAME).
+
+        Parameters
+        ----------
+        connection_type : str, default 'snowflake'
+            Type of database connection to configure. Options:
+            - 'snowflake': Use Snowflake connector
+            - 'odbc': Use ODBC connection
+            - 'adbc': Use Arrow Database Connectivity
+        odbc_name : str or None, default None
+            DSN (Data Source Name) configured in ODBC sources. Used for ODBC connections.
+        connection_string : str or None, default None
+            Full ODBC connection string. Takes precedence over odbc_name if both are provided.
+        uri : str or None, default None
+            Connection URI for ADBC connections (e.g., 'postgresql://user:pass@host:5432/dbname').
+        driver : str or None, default None
+            ADBC driver entrypoint or shared-library path (e.g., 'adbc_driver_postgresql.dbapi').
+        account : str or None, default None
+            Snowflake account identifier (e.g., 'xy12345.us-east-1').
+        warehouse : str or None, default None
+            Snowflake warehouse name for compute resources.
+        database : str or None, default None
+            Snowflake database name.
+        schema : str or None, default None
+            Snowflake schema name within the database.
+        role : str or None, default None
+            Snowflake role to use for the connection.
+        authenticator : str, default 'externalbrowser'
+            Snowflake authentication method. Common values:
+            - 'externalbrowser': SSO via web browser
+            - 'snowflake': Username/password
+            - 'oauth': OAuth token authentication
+
+        Attributes
+        ----------
+        user : str
+            Username detected from environment variables (SNOWFLAKE_USER, USER, or USERNAME).
+        _snowflake_conn : snowflake.connector.SnowflakeConnection or None
+            Cached Snowflake connection object, reused by connectSnowflake().
+
+        Examples
+        --------
+        Create a Snowflake connection configuration:
+
+        >>> dbi = DBI(
+        ...     connection_type='snowflake',
+        ...     account='xy12345.us-east-1',
+        ...     warehouse='COMPUTE_WH',
+        ...     database='ANALYTICS',
+        ...     schema='PUBLIC',
+        ...     role='ANALYST'
+        ... )
+        >>> conn = dbi.connectSnowflake()
+
+        Create an ODBC connection configuration:
+
+        >>> dbi = DBI(
+        ...     connection_type='odbc',
+        ...     odbc_name='MyDataSource'
+        ... )
+        >>> conn = dbi.connectODBC()
+
+        Create an ADBC connection configuration:
+
+        >>> dbi = DBI(
+        ...     connection_type='adbc',
+        ...     driver='adbc_driver_postgresql.dbapi',
+        ...     uri='postgresql://localhost:5432/mydb'
+        ... )
+        >>> conn = dbi.connectADBC(driver=dbi.driver, uri=dbi.uri)
+        '''
+        self.user = (
             os.environ.get("SNOWFLAKE_USER")
             or os.environ.get("USER")
             or os.environ.get("USERNAME")
         )
 
-    @classmethod
-    def connectSnowflake(
-        self, 
-        account: str, 
-        warehouse: str, 
-        database: str ,
-        schema: str, 
-        role: str, 
-        authenticator: str = 'externalbrower'
-    ):
-        '''
-        Connect to Snowflake. Defailvia an external browser (SSO)
-        '''
+        self._snowflake_conn: snowflake.connector.SnowflakeConnection | None = None
 
-        return snowflake.connector.connect(
-            account = account,
-            user = self.user,
-            authenticator = authenticator,
-            role = role,
-            warehouse=warehouse,
-            database = database,
-            schema = schema
+        # ODBC configuration
+        self.odbc_name = odbc_name
+        self.connection_string = connection_string
+
+        # ADBC configuration
+        self.uri = uri
+        self.driver = driver
+
+        # Snowflake configuration (always set to avoid AttributeError)
+        self.account = account
+        self.warehouse = warehouse
+        self.database = database
+        self.schema = schema
+        self.role = role
+        self.authenticator = authenticator
+
+
+    def connectSnowflake(self) -> snowflake.connector.SnowflakeConnection:
+        '''
+        Connect to Snowflake. Reuses an existing open connection if available.
+        
+        Returns
+        -------
+        snowflake.connector.SnowflakeConnection
+            Active Snowflake connection object.
+            
+        Raises
+        ------
+        snowflake.connector.Error
+            If the connection cannot be established.
+        '''
+        # Reuse existing connection if it's still open
+        if self._snowflake_conn is not None:
+            try:
+                if not self._snowflake_conn.is_closed():
+                    return self._snowflake_conn
+            except Exception:
+                # If connection health cannot be checked, create a fresh one
+                pass
+
+        # Create new connection
+        self._snowflake_conn = snowflake.connector.connect(
+            account=self.account,
+            user=self.user,
+            authenticator=self.authenticator,
+            role=self.role,
+            warehouse=self.warehouse,
+            database=self.database,
+            schema=self.schema
         )
 
-    @classmethod
-    def connectODBC(
-        self, 
-        dsn_name: str | None = None,
-        connection_string: str | None = None,
-        **kwargs,
-    ) -> pyodbc.Connection:
+        return self._snowflake_conn
 
+    def connectODBC(self, **kwargs) -> pyodbc.Connection:
         '''
         Connect to a database via ODBC.
 
         Parameters
-        -----------
-        dsn:
-            DSN name configured in the ODBC source. Ignored if a connection string is provided.
-        connection_string:
-            ODBC connection string. Ignored if dsn and kwargs are supplied.
-        **kwargs:
-            Additional keyword arguments passed to  pyodbc.connect when building from a DSN.
+        ----------
+        **kwargs
+            Additional keyword arguments passed to pyodbc.connect when using DSN.
+            Ignored if connection_string was provided in __init__.
 
         Returns
-        --------
+        -------
         pyodbc.Connection
+            Active ODBC connection object.
 
         Raises
-        --------
-        ValueError:
-            If neither dsn or connection_string is provided.
-        pyodbc.Error:
-            If the driver raises a connection error
+        ------
+        ValueError
+            If neither odbc_name nor connection_string was provided in __init__.
+        pyodbc.Error
+            If the driver raises a connection error.
         '''
+        # Prioritize DSN over connection string
+        if self.odbc_name:
+                    return pyodbc.connect(f"DSN={self.odbc_name}", **kwargs)
 
-        if connection_string:
-            return pyodbc.connect(connection_string)
+        if self.connection_string:
+            return pyodbc.connect(self.connection_string)
 
-        if dsn_name:
-            return pyodbc.connect(f"DSN={dsn_name}", **kwargs)
+        raise ValueError(
+            "Either 'odbc_name' or 'connection_string' must be provided in __init__"
+        )
 
-        raise ValueError("Provide a dsn name or full connection string")
-
-    @classmethod
     def connectADBC(
         self,
-        driver: str,
+        driver: str | None = None,
         uri: str | None = None,
         **kwargs
     ) -> adbc_driver_manager.dbapi.Connection:
@@ -99,143 +203,104 @@ class DBI:
         Connect to a database via ADBC (Arrow Database Connectivity).
 
         Parameters
-        -----------
-        driver:
-            ADBC driver entrypoint or shared-library path. e.g. adbc_driver_postgresql.dbapi
-        uri:
-            Connection URI to the driver. E.g. postgresql://user:pass@host:5432/dbname
-        **kwargs:
-            Additional driver specific init parameters forwarded to abdc_driver_manager.dbapi.connect.
+        ----------
+        driver : str or None, default None
+            ADBC driver entrypoint or shared-library path 
+            (e.g., 'adbc_driver_postgresql.dbapi'). If None, uses driver from __init__.
+        uri : str or None, default None
+            Connection URI (e.g., 'postgresql://user:pass@host:5432/dbname').
+            If None, uses uri from __init__.
+        **kwargs
+            Additional driver-specific parameters forwarded to adbc_driver_manager.dbapi.connect.
+
         Returns
         -------
         adbc_driver_manager.dbapi.Connection
-
-        Raises
-        ------
-        adbc_driver_manager.ProgrammingError:
-            If the driver cannot be loaded or the connection fails.
-        '''
-
-        if uri:
-            kwargs["uri"] = uri
-        return adbc_driver_manager.dbapi.connect(driver=driver, **kwargs)
-
-    @classmethod
-    def get_query(
-            self,
-            conn,
-            query: str | Path,
-            engine: str = 'polars',
-            dbi_engine: str = 'odbc'
-    ) -> pl.DataFrame:
-
-        '''
-            Read a SQL file and/or execute a query against a database.
-
-            Parameters
-            ----------
-            conn:
-                An open database connection. 
-            query:
-                File path to a `.sql` file or query text to run
-            engine:
-                Execution/return engine:
-                - `"polars"` (default): returns `polars.DataFrame`
-            dbi_engine:
-                - `"odbc"` (default): Executes query using a default connection string
-                - `"adbc"`: Executes query using an ADBC connection string (URI)
-            
-            Returns
-            --------
-            polars.DataFrame 
-                Query results in the DataFrame type corresponding to `engine`
-            
-            Raises
-            ------
-            ValueError
-                If `engine` is not `"polars"` .
-            FileNotFoundError / OSError
-                If `query` cannot be read
-            Exception
-                Any database/driver errors raised while executing the SQL.
-        '''
-        sql = self.read_sql(query)
-        db_eng = dbi_engine.lower().strip()
-        eng = engine.lower().strip()
-
-        if db_eng == "adbc":
-            return pl.read_database_uri(query=sql, uri=conn)
-
-        if eng == "polars":
-            return pl.read_database(query=sql, connection=conn)
-
-
-        raise ValueError("Engine must be weither 'polars'")
-
-    @classmethod
-    def export_parquet(
-        self,
-        df: pl.DataFrame,
-        parquet_path: str | Path,
-        create_dirs: bool = True,
-        compression: str = "zstd",
-        verbose: bool = True,
-    ) -> Path:
-        '''
-        Export a Polars or Pandas Dataframe to a parquet file.
-
-        Parameters
-        ----------
-        df:
-            Input dataframe
-        parquet_path:
-            Destination file path (string or Path). Must end with `.parquet`.
-        compression:
-            Parquet compression codec. Common values: "zstd", "snappy", "gzip"
-        create_dirs:
-            If True, creates parent directories for `parquet_path` if needed.
-        verbose:
-            If True, prints a confirmation message.
-
-        Returns
-        -------
-        Path
-            The resolved output path written
+            Active ADBC connection object.
 
         Raises
         ------
         ValueError
-            If an unknown engine is provided.
-        TypeError
-            If `df` is not compatible with the selected engine.
-        ImportError
-            If `engine="pandas"` but pandas is not installed
+            If no driver is provided either as parameter or in __init__.
+        adbc_driver_manager.ProgrammingError
+            If the driver cannot be loaded or the connection fails.
         '''
-
-        path = Path(parquet_path)
-
-        if path.suffix.lower() != ".parquet":
-            path = path.with_suffix(".parquet")
-
-        if create_dirs:
-            path.parent.mkdir(parents=True, exist_ok=True)
-
-        if isinstance(df, pl.DataFrame):
-            df.write_parquet(path, compression = compression)
-
-        if isinstance(df, pd.DataFrame):
-            df.to_parquet(path, compression = compression)
-
-        if verbose:
-            print(f"DataFrame exported to Parquet: {path}")
-
-        return path
-
+        # Use parameter if provided, otherwise fall back to instance attribute
+        _driver = driver or self.driver
+        _uri = uri or self.uri
         
+        if _driver is None:
+            raise ValueError(
+                "driver must be provided either in __init__ or as a parameter"
+            )
+        
+        if _uri:
+            kwargs["uri"] = _uri
+            
+        return adbc_driver_manager.dbapi.connect(driver=_driver, **kwargs)
 
+    def get_query(
+        self,
+        conn,
+        query: str | Path
+    ) -> pl.DataFrame:
+        '''
+        Execute a SQL query against a database and return results as a Polars DataFrame.
 
+        Parameters
+        ----------
+        conn
+            An open database connection (ODBC, ADBC, or Snowflake). 
+            Ignored if self.uri is configured (uses URI-based connection instead).
+        query : str or Path
+            SQL query text or path to a .sql file.
+        
+        Returns
+        -------
+        pl.DataFrame 
+            Query results as a Polars DataFrame.
+        
+        Raises
+        ------
+        FileNotFoundError
+            If query is a file path that doesn't exist.
+        OSError
+            If query file cannot be read.
+        Exception
+            Database/driver errors raised during query execution.
+        
+        Examples
+        --------
+        Execute a SQL string:
+        
+        >>> dbi = DBI(connection_type='odbc', odbc_name='MyDB')
+        >>> conn = dbi.connectODBC()
+        >>> df = dbi.get_query(conn, "SELECT * FROM users WHERE active = 1")
+        
+        Execute from a SQL file:
+        
+        >>> df = dbi.get_query(conn, Path("queries/monthly_report.sql"))
+        '''
+        sql = utilities.read_sql(query)
 
-
-
+        # Use ADBC URI method if configured, otherwise use standard connection
+        if self.uri:
+            return pl.read_database_uri(query=sql, uri=self.uri)
+        
+        return pl.read_database(query=sql, connection=conn)
+    
+    def close_snowflake(self) -> None:
+        '''
+        Close the cached Snowflake connection if one exists.
+        
+        This is useful for explicitly releasing resources when done with database operations.
+        '''
+        if self._snowflake_conn is not None:
+            try:
+                self._snowflake_conn.close()
+            except Exception:
+                pass
+            finally:
+                self._snowflake_conn = None
 
             

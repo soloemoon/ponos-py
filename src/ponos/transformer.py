@@ -144,38 +144,7 @@ def calc_day_diff(
         out_df = self.df.with_columns(cohort_expr)
         return MutateFrame(out_df)
 
-    def map_column(
-        self,
-        col: str,
-        mapping: Mapping[str, str],
-        *,
-        out_col: str | None = None,
-        default: str | None = None
-    ) -> MutateFrame:
-
-        '''
-        Replace values in a string column using a lookup dictionary.
-
-        Parameters
-        __________
-        col:
-            Name of the column to map
-        mapping:
-            ``{old_value: new_value}`` dictionary
-        out_col:
-            Output column name. Defaults to overwriting `col`.
-        default:
-            Value for keys absent from `mapping`. ``None`` preserves the original value for unmatched rows.
-        '''
-
-        target = out_col or col
-
-        if default is None:
-            expr = pl.col(col).replace(mapping).alias(target)
-        else:
-            expr = pl.col(col).replace(mapping, default = default).alias(target)
-
-        return MutateFrame(self.df.with_columns(expr))
+   
 
 
     def bin_histogram(
