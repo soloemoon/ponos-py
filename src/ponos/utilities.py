@@ -239,6 +239,12 @@ def read_sql(query_path: str | Path) -> str:
     return p.read_text(encoding='utf-8').strip()
 
 
+def safe_sheet_name(name: str) -> str:
+    invalid_chars = set(r':\/?*[]<>|')
+
+    # Remove invalid characters and truncate to 31 characters
+    safe_name = ''.join("_" if c in invalid_chars else c for c in name).strip()
+    return safe_name[:31] if safe_name else 'Sheet1'
 
 
 
